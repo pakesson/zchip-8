@@ -29,26 +29,6 @@ pub fn main() anyerror!void {
 
     var rnd = std.rand.DefaultPrng.init(0);
 
-    _ = sdl.SDL_Init(sdl.SDL_INIT_VIDEO);
-    defer sdl.SDL_Quit();
-
-    var window = sdl.SDL_CreateWindow("CHIP-8", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 640, 320, 0);
-    defer sdl.SDL_DestroyWindow(window);
-
-    var renderer = sdl.SDL_CreateRenderer(window, 0, sdl.SDL_RENDERER_PRESENTVSYNC);
-    defer sdl.SDL_DestroyRenderer(renderer);
-
-    // Set logical size and let SDL handle scaling
-    _ = sdl.SDL_RenderSetLogicalSize(renderer, 64, 32);
-
-    // Create a texture with the same dimensions as our logical size
-    // We use RGB332 since we want to use only one byte per pixel for easier indexing
-    // (One bit per pixel would have been enough, but this is fine)
-    var texture = sdl.SDL_CreateTexture(renderer, sdl.SDL_PIXELFORMAT_RGB332, sdl.SDL_TEXTUREACCESS_STREAMING, 64, 32);
-
-    // Raw pixels that we will be manipulating and then copying to the texture
-    var pixels: [32*64]u8 = std.mem.zeroes([32*64]u8);
-
     // Emulator state
     var memory: [4096]u8 = std.mem.zeroes([4096]u8);
     var pc: u16 = 0x200;
@@ -85,6 +65,27 @@ pub fn main() anyerror!void {
     const file = try std.fs.cwd().openFile(rom_path, .{ .read = true });
     defer file.close();
     _ = try file.readAll(memory[0x200..]);
+
+    // Initialize SDL
+    _ = sdl.SDL_Init(sdl.SDL_INIT_VIDEO);
+    defer sdl.SDL_Quit();
+
+    var window = sdl.SDL_CreateWindow("CHIP-8", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 640, 320, 0);
+    defer sdl.SDL_DestroyWindow(window);
+
+    var renderer = sdl.SDL_CreateRenderer(window, 0, sdl.SDL_RENDERER_PRESENTVSYNC);
+    defer sdl.SDL_DestroyRenderer(renderer);
+
+    // Set logical size and let SDL handle scaling
+    _ = sdl.SDL_RenderSetLogicalSize(renderer, 64, 32);
+
+    // Create a texture with the same dimensions as our logical size
+    // We use RGB332 since we want to use only one byte per pixel for easier indexing
+    // (One bit per pixel would have been enough, but this is fine)
+    var texture = sdl.SDL_CreateTexture(renderer, sdl.SDL_PIXELFORMAT_RGB332, sdl.SDL_TEXTUREACCESS_STREAMING, 64, 32);
+
+    // Raw pixels that we will be manipulating and then copying to the texture
+    var pixels: [32*64]u8 = std.mem.zeroes([32*64]u8);
 
     // Draw at least once
     var draw: bool = true;
