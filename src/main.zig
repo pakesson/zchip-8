@@ -62,7 +62,7 @@ pub fn main() anyerror!void {
     std.mem.copy(u8, memory[0x50..], font[0..]);
 
     // Load program
-    const file = try std.fs.cwd().openFile(rom_path, .{ .read = true });
+    const file = try std.fs.cwd().openFile(rom_path, .{.mode = .read_only});
     defer file.close();
     _ = try file.readAll(memory[0x200..]);
 

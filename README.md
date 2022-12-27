@@ -2,7 +2,7 @@ Simple CHIP-8 emulator written in Zig.
 
 # Dependencies
 
-* Zig 0.9.x
+* Zig 0.10.0
 * SDL 2
 
 # Building
