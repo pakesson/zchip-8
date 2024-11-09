@@ -14,13 +14,13 @@ pub const EmulatorError = error{
 
 pub fn main() anyerror!void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.debug.assert(!gpalloc.deinit());
+    defer std.debug.assert(gpalloc.deinit() == .ok);
     const allocator = gpalloc.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     if (args.len != 2) {
-        std.debug.print("Usage: {s} ROM_FILE", .{args[0]});
+        std.debug.print("Usage: {s} ROM_FILE\n", .{args[0]});
         return;
     }
     const rom_path = args[1];
@@ -41,7 +41,7 @@ pub fn main() anyerror!void {
     var keys: [16]bool = [_]bool{false} ** 16;
 
     // Load font
-    const font: [0x50]u8 = [_]u8 {
+    const font: [0x50]u8 = [_]u8{
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
         0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -57,23 +57,27 @@ pub fn main() anyerror!void {
         0xF0, 0x80, 0x80, 0x80, 0xF0, // C
         0xE0, 0x90, 0x90, 0x90, 0xE0, // D
         0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+        0xF0, 0x80, 0xF0, 0x80, 0x80, // F
     };
-    std.mem.copy(u8, memory[0x50..], font[0..]);
+    @memcpy(memory[0x50..0xa0], font[0..]);
 
     // Load program
-    const file = try std.fs.cwd().openFile(rom_path, .{.mode = .read_only});
+    std.log.info("Loading program", .{});
+    const file = try std.fs.cwd().openFile(rom_path, .{ .mode = .read_only });
     defer file.close();
     _ = try file.readAll(memory[0x200..]);
 
     // Initialize SDL
+    std.log.info("Initializing SDL", .{});
     _ = sdl.SDL_Init(sdl.SDL_INIT_VIDEO);
     defer sdl.SDL_Quit();
 
-    var window = sdl.SDL_CreateWindow("CHIP-8", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 640, 320, 0);
+    std.log.info("Creating window", .{});
+    const window = sdl.SDL_CreateWindow("CHIP-8", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 640, 320, 0);
     defer sdl.SDL_DestroyWindow(window);
 
-    var renderer = sdl.SDL_CreateRenderer(window, 0, sdl.SDL_RENDERER_PRESENTVSYNC);
+    std.log.info("Creating renderer", .{});
+    const renderer = sdl.SDL_CreateRenderer(window, 0, sdl.SDL_RENDERER_PRESENTVSYNC);
     defer sdl.SDL_DestroyRenderer(renderer);
 
     // Set logical size and let SDL handle scaling
@@ -82,19 +86,20 @@ pub fn main() anyerror!void {
     // Create a texture with the same dimensions as our logical size
     // We use RGB332 since we want to use only one byte per pixel for easier indexing
     // (One bit per pixel would have been enough, but this is fine)
-    var texture = sdl.SDL_CreateTexture(renderer, sdl.SDL_PIXELFORMAT_RGB332, sdl.SDL_TEXTUREACCESS_STREAMING, 64, 32);
+    const texture = sdl.SDL_CreateTexture(renderer, sdl.SDL_PIXELFORMAT_RGB332, sdl.SDL_TEXTUREACCESS_STREAMING, 64, 32);
 
     // Raw pixels that we will be manipulating and then copying to the texture
-    var pixels: [32*64]u8 = std.mem.zeroes([32*64]u8);
+    var pixels: [32 * 64]u8 = std.mem.zeroes([32 * 64]u8);
 
     // Draw at least once
     var draw: bool = true;
-    @memset(pixels[0..], 0, 32*64);
+    @memset(pixels[0..], 0);
 
     var infinite_loop: bool = false;
 
     var ticks = sdl.SDL_GetTicks();
 
+    std.log.info("Starting main loop", .{});
     mainloop: while (true) {
         // Handle SDL events
         var sdl_event: sdl.SDL_Event = undefined;
@@ -102,7 +107,7 @@ pub fn main() anyerror!void {
             switch (sdl_event.type) {
                 sdl.SDL_QUIT => break :mainloop,
                 sdl.SDL_KEYDOWN, sdl.SDL_KEYUP => {
-                    var keystate: bool = (sdl_event.type == sdl.SDL_KEYDOWN);
+                    const keystate: bool = (sdl_event.type == sdl.SDL_KEYDOWN);
                     switch (sdl_event.key.keysym.scancode) {
                         sdl.SDL_SCANCODE_ESCAPE => break :mainloop,
 
@@ -133,7 +138,7 @@ pub fn main() anyerror!void {
         if (infinite_loop) continue :mainloop;
 
         // Timers
-        var current_ticks = sdl.SDL_GetTicks();
+        const current_ticks = sdl.SDL_GetTicks();
         if (current_ticks - ticks > 60) {
             if (delay_timer > 0) delay_timer -= 1;
             if (sound_timer > 0) sound_timer -= 1;
@@ -141,7 +146,7 @@ pub fn main() anyerror!void {
         }
 
         // Fetch instruction
-        var inst: u16 = @intCast(u16, memory[pc]) << 8 | @intCast(u16, memory[pc+1]);
+        const inst: u16 = @as(u16, @intCast(memory[pc])) << 8 | @as(u16, @intCast(memory[pc + 1]));
         //std.log.debug("pc = {x}, inst = {x}", .{ pc, inst });
         pc += 2;
         if (pc >= 0xfff) {
@@ -149,17 +154,17 @@ pub fn main() anyerror!void {
         }
 
         // Decode and execute
-        var x: u4 = @truncate(u4, inst >> 8);
-        var y: u4 = @truncate(u4, inst >> 4);
-        var nnn: u12 = @truncate(u12, inst);
-        var nn: u8 = @truncate(u8, inst);
-        var n: u4 = @truncate(u4, inst);
+        const x: u4 = @truncate(inst >> 8);
+        const y: u4 = @truncate(inst >> 4);
+        const nnn: u12 = @truncate(inst);
+        const nn: u8 = @truncate(inst);
+        const n: u4 = @truncate(inst);
         switch (inst >> 12) {
             0x0 => {
                 switch (nnn) {
                     0x0e0 => {
                         // Clear display
-                        @memset(pixels[0..], 0, 32*64);
+                        @memset(pixels[0..], 0);
                     },
                     0x0ee => {
                         // Return from subroutine
@@ -171,7 +176,7 @@ pub fn main() anyerror!void {
             },
             0x1 => {
                 // Jump to address
-                if (pc-2 == nnn) {
+                if (pc - 2 == nnn) {
                     std.log.debug("Infinite loop detected", .{});
                     infinite_loop = true;
                 }
@@ -232,48 +237,45 @@ pub fn main() anyerror!void {
                     },
                     0x4 => {
                         // Add register y to register x
-                        var res: u8 = 0;
-                        var overflow = @addWithOverflow(u8, regs[x], regs[y], &res);
-                        if (overflow) {
-                            regs[0xf] = 0x00;
-                        } else {
+                        const res = @addWithOverflow(regs[x], regs[y]);
+                        if (res[1] != 0) {
                             regs[0xf] = 0x01;
+                        } else {
+                            regs[0xf] = 0x00;
                         }
-                        regs[x] = res;
+                        regs[x] = res[0];
                     },
                     0x5 => {
                         // Subtract register y from register x
-                        var res: u8 = 0;
-                        var underflow = @subWithOverflow(u8, regs[x], regs[y], &res);
-                        if (underflow) {
+                        const res = @subWithOverflow(regs[x], regs[y]);
+                        if (res[1] != 0) {
                             regs[0xf] = 0x00;
                         } else {
                             regs[0xf] = 0x01;
                         }
-                        regs[x] = res;
+                        regs[x] = res[0];
                     },
                     0x6 => {
                         // Shift register y to the right and store in register x
                         // TODO: Alternative/quirk implementation: Use x instead of y
-                        var lsb: u1 = @truncate(u1, regs[x]);
+                        const lsb: u1 = @truncate(regs[x]);
                         regs[0xf] = lsb;
                         regs[x] = regs[x] >> 1;
                     },
                     0x7 => {
                         // Subtract register x from register y and store in register x
-                        var res: u8 = 0;
-                        var underflow = @subWithOverflow(u8, regs[y], regs[x], &res);
-                        if (underflow) {
+                        const res = @subWithOverflow(regs[y], regs[x]);
+                        if (res[1] != 0) {
                             regs[0xf] = 0x00;
                         } else {
                             regs[0xf] = 0x01;
                         }
-                        regs[x] = res;
+                        regs[x] = res[0];
                     },
                     0xe => {
                         // Shift register y to the left and store in register x
                         // TODO: Alternative implementation: Use x instead of y
-                        var msb: u1 = @truncate(u1, regs[x] >> 7);
+                        const msb: u1 = @truncate(regs[x] >> 7);
                         regs[0xf] = msb;
                         regs[x] = regs[x] << 1;
                     },
@@ -306,15 +308,15 @@ pub fn main() anyerror!void {
                 regs[0xf] = 0x00;
                 var j: usize = 0;
                 draw_sprite_y: while (j < n) {
-                    var y_coord = (regs[y] & 31) + j;
+                    const y_coord = (regs[y] & 31) + j;
                     if (y_coord > 31) break :draw_sprite_y;
-                    var data = memory[index + j];
+                    const data = memory[index + j];
                     var k: usize = 0;
                     draw_sprite_x: while (k < 8) {
-                        var x_coord = (regs[x] & 63) + k;
+                        const x_coord = (regs[x] & 63) + k;
                         if (x_coord > 63) break :draw_sprite_x;
-                        var offset = y_coord * 64 + x_coord;
-                        if (@truncate(u1, data >> @truncate(u3, 7-k)) != 0) {
+                        const offset = y_coord * 64 + x_coord;
+                        if (@as(u1, @truncate(data >> @as(u3, @truncate(7 - k)))) != 0) {
                             if (pixels[offset] != 0) {
                                 regs[0xf] = 0x01;
                                 pixels[offset] = 0;
@@ -386,7 +388,7 @@ pub fn main() anyerror!void {
                     0x55 => {
                         var i: u8 = 0;
                         while (i <= x) {
-                            memory[index+i] = regs[i];
+                            memory[index + i] = regs[i];
                             i += 1;
                         }
                         // TODO: Alternative implementation: Increment index
@@ -395,7 +397,7 @@ pub fn main() anyerror!void {
                     0x65 => {
                         var i: u8 = 0;
                         while (i <= x) {
-                            regs[i] = memory[index+i];
+                            regs[i] = memory[index + i];
                             i += 1;
                         }
                         // TODO: Alternative implentation: Increment index
@@ -409,7 +411,7 @@ pub fn main() anyerror!void {
 
         // Render graphics
         if (draw) {
-            var pixelsPtr = @ptrCast(*anyopaque, &pixels);
+            const pixelsPtr: *anyopaque = @ptrCast(&pixels);
             _ = sdl.SDL_UpdateTexture(texture, 0, pixelsPtr, 64);
             _ = sdl.SDL_RenderCopy(renderer, texture, 0, 0);
             sdl.SDL_RenderPresent(renderer);
