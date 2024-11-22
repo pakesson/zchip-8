@@ -4,12 +4,72 @@ const sdl = @cImport({
     @cInclude("SDL.h");
 });
 
+const Const = struct {
+    const MEMORY_SIZE: usize = 4096;
+    const NUM_REGISTERS: usize = 16;
+    const STACK_SIZE: usize = 64;
+    const NUM_KEYS: usize = 16;
+    const PROGRAM_START: u16 = 0x200;
+    const FONT_LENGTH: u16 = 0x50;
+    const FONT_START: u16 = 0x50;
+    const FONT_END: u16 = 0xa0;
+};
+
 pub const DecoderError = error{
     UnsupportedInstruction,
 };
 
 pub const EmulatorError = error{
     ProgramCounterOverflow,
+};
+
+const FONT: [Const.FONT_LENGTH]u8 = [_]u8{
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+};
+
+const EmulatorState = struct {
+    memory: [Const.MEMORY_SIZE]u8,
+    pc: u16,
+    regs: [Const.NUM_REGISTERS]u8,
+    stack: [Const.STACK_SIZE]u16,
+    sp: u6,
+    index: u16,
+    delay_timer: u8,
+    sound_timer: u8,
+    keys: [Const.NUM_KEYS]bool,
+
+    pub fn init() EmulatorState {
+        var state = EmulatorState{
+            .memory = std.mem.zeroes([Const.MEMORY_SIZE]u8),
+            .pc = Const.PROGRAM_START,
+            .regs = [_]u8{0} ** Const.NUM_REGISTERS,
+            .stack = [_]u16{0} ** Const.STACK_SIZE,
+            .sp = 0,
+            .index = 0,
+            .delay_timer = 0,
+            .sound_timer = 0,
+            .keys = [_]bool{false} ** Const.NUM_KEYS,
+        };
+
+        // Load font data into memory
+        @memcpy(state.memory[Const.FONT_START..Const.FONT_END], FONT[0..]);
+        return state;
+    }
 };
 
 pub fn main() anyerror!void {
@@ -29,43 +89,14 @@ pub fn main() anyerror!void {
 
     var rnd = std.rand.DefaultPrng.init(0);
 
-    // Emulator state
-    var memory: [4096]u8 = std.mem.zeroes([4096]u8);
-    var pc: u16 = 0x200;
-    var regs: [16]u8 = [_]u8{0} ** 16;
-    var stack: [64]u16 = [_]u16{0} ** 64;
-    var sp: u6 = 0;
-    var index: u16 = 0;
-    var delay_timer: u8 = 0;
-    var sound_timer: u8 = 0;
-    var keys: [16]bool = [_]bool{false} ** 16;
-
-    // Load font
-    const font: [0x50]u8 = [_]u8{
-        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-        0x20, 0x60, 0x20, 0x20, 0x70, // 1
-        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80, // F
-    };
-    @memcpy(memory[0x50..0xa0], font[0..]);
+    // Initialize emulator state
+    var state = EmulatorState.init();
 
     // Load program
     std.log.info("Loading program", .{});
     const file = try std.fs.cwd().openFile(rom_path, .{ .mode = .read_only });
     defer file.close();
-    _ = try file.readAll(memory[0x200..]);
+    _ = try file.readAll(state.memory[0x200..]);
 
     // Initialize SDL
     std.log.info("Initializing SDL", .{});
@@ -111,22 +142,22 @@ pub fn main() anyerror!void {
                     switch (sdl_event.key.keysym.scancode) {
                         sdl.SDL_SCANCODE_ESCAPE => break :mainloop,
 
-                        sdl.SDL_SCANCODE_1 => keys[0x1] = keystate,
-                        sdl.SDL_SCANCODE_2 => keys[0x2] = keystate,
-                        sdl.SDL_SCANCODE_3 => keys[0x3] = keystate,
-                        sdl.SDL_SCANCODE_4 => keys[0xc] = keystate,
-                        sdl.SDL_SCANCODE_Q => keys[0x4] = keystate,
-                        sdl.SDL_SCANCODE_W => keys[0x5] = keystate,
-                        sdl.SDL_SCANCODE_E => keys[0x6] = keystate,
-                        sdl.SDL_SCANCODE_R => keys[0xd] = keystate,
-                        sdl.SDL_SCANCODE_A => keys[0x7] = keystate,
-                        sdl.SDL_SCANCODE_S => keys[0x8] = keystate,
-                        sdl.SDL_SCANCODE_D => keys[0x9] = keystate,
-                        sdl.SDL_SCANCODE_F => keys[0xe] = keystate,
-                        sdl.SDL_SCANCODE_Z => keys[0xa] = keystate,
-                        sdl.SDL_SCANCODE_X => keys[0x0] = keystate,
-                        sdl.SDL_SCANCODE_C => keys[0xb] = keystate,
-                        sdl.SDL_SCANCODE_V => keys[0xf] = keystate,
+                        sdl.SDL_SCANCODE_1 => state.keys[0x1] = keystate,
+                        sdl.SDL_SCANCODE_2 => state.keys[0x2] = keystate,
+                        sdl.SDL_SCANCODE_3 => state.keys[0x3] = keystate,
+                        sdl.SDL_SCANCODE_4 => state.keys[0xc] = keystate,
+                        sdl.SDL_SCANCODE_Q => state.keys[0x4] = keystate,
+                        sdl.SDL_SCANCODE_W => state.keys[0x5] = keystate,
+                        sdl.SDL_SCANCODE_E => state.keys[0x6] = keystate,
+                        sdl.SDL_SCANCODE_R => state.keys[0xd] = keystate,
+                        sdl.SDL_SCANCODE_A => state.keys[0x7] = keystate,
+                        sdl.SDL_SCANCODE_S => state.keys[0x8] = keystate,
+                        sdl.SDL_SCANCODE_D => state.keys[0x9] = keystate,
+                        sdl.SDL_SCANCODE_F => state.keys[0xe] = keystate,
+                        sdl.SDL_SCANCODE_Z => state.keys[0xa] = keystate,
+                        sdl.SDL_SCANCODE_X => state.keys[0x0] = keystate,
+                        sdl.SDL_SCANCODE_C => state.keys[0xb] = keystate,
+                        sdl.SDL_SCANCODE_V => state.keys[0xf] = keystate,
 
                         else => {},
                     }
@@ -140,16 +171,16 @@ pub fn main() anyerror!void {
         // Timers
         const current_ticks = sdl.SDL_GetTicks();
         if (current_ticks - ticks > 60) {
-            if (delay_timer > 0) delay_timer -= 1;
-            if (sound_timer > 0) sound_timer -= 1;
+            if (state.delay_timer > 0) state.delay_timer -= 1;
+            if (state.sound_timer > 0) state.sound_timer -= 1;
             ticks = current_ticks;
         }
 
         // Fetch instruction
-        const inst: u16 = @as(u16, @intCast(memory[pc])) << 8 | @as(u16, @intCast(memory[pc + 1]));
-        //std.log.debug("pc = {x}, inst = {x}", .{ pc, inst });
-        pc += 2;
-        if (pc >= 0xfff) {
+        const inst: u16 = @as(u16, @intCast(state.memory[state.pc])) << 8 | @as(u16, @intCast(state.memory[state.pc + 1]));
+        //std.log.debug("pc = {x}, inst = {x}", .{ state.pc, inst });
+        state.pc += 2;
+        if (state.pc >= 0xfff) {
             return error.ProgramCounterOverflow;
         }
 
@@ -168,36 +199,36 @@ pub fn main() anyerror!void {
                     },
                     0x0ee => {
                         // Return from subroutine
-                        pc = stack[sp];
-                        sp -= 1;
+                        state.pc = state.stack[state.sp];
+                        state.sp -= 1;
                     },
                     else => return error.UnsupportedInstruction,
                 }
             },
             0x1 => {
                 // Jump to address
-                if (pc - 2 == nnn) {
+                if (state.pc - 2 == nnn) {
                     std.log.debug("Infinite loop detected", .{});
                     infinite_loop = true;
                 }
-                pc = nnn;
+                state.pc = nnn;
             },
             0x2 => {
                 // Call subroutine
-                sp += 1;
-                stack[sp] = pc;
-                pc = nnn;
+                state.sp += 1;
+                state.stack[state.sp] = state.pc;
+                state.pc = nnn;
             },
             0x3 => {
                 // Skip instruction if register is equal to value
-                if (regs[x] == nn) {
-                    pc += 2;
+                if (state.regs[x] == nn) {
+                    state.pc += 2;
                 }
             },
             0x4 => {
                 // Skip instruction if register is not equal to value
-                if (regs[x] != nn) {
-                    pc += 2;
+                if (state.regs[x] != nn) {
+                    state.pc += 2;
                 }
             },
             0x5 => {
@@ -205,79 +236,79 @@ pub fn main() anyerror!void {
                     return error.UnsupportedInstruction;
                 }
                 // Skip instructions if register x is equal to register y
-                if (regs[x] == regs[y]) {
-                    pc += 2;
+                if (state.regs[x] == state.regs[y]) {
+                    state.pc += 2;
                 }
             },
             0x6 => {
                 // Store in register
-                regs[x] = nn;
+                state.regs[x] = nn;
             },
             0x7 => {
                 // Add to register
-                regs[x] +%= nn; // Wrapping addition
+                state.regs[x] +%= nn; // Wrapping addition
             },
             0x8 => {
                 switch (n) {
                     0x0 => {
                         // Store register y in register x
-                        regs[x] = regs[y];
+                        state.regs[x] = state.regs[y];
                     },
                     0x1 => {
                         // OR
-                        regs[x] = regs[x] | regs[y];
+                        state.regs[x] = state.regs[x] | state.regs[y];
                     },
                     0x2 => {
                         // AND
-                        regs[x] = regs[x] & regs[y];
+                        state.regs[x] = state.regs[x] & state.regs[y];
                     },
                     0x3 => {
                         // XOR
-                        regs[x] = regs[x] ^ regs[y];
+                        state.regs[x] = state.regs[x] ^ state.regs[y];
                     },
                     0x4 => {
                         // Add register y to register x
-                        const res = @addWithOverflow(regs[x], regs[y]);
+                        const res = @addWithOverflow(state.regs[x], state.regs[y]);
                         if (res[1] != 0) {
-                            regs[0xf] = 0x01;
+                            state.regs[0xf] = 0x01;
                         } else {
-                            regs[0xf] = 0x00;
+                            state.regs[0xf] = 0x00;
                         }
-                        regs[x] = res[0];
+                        state.regs[x] = res[0];
                     },
                     0x5 => {
                         // Subtract register y from register x
-                        const res = @subWithOverflow(regs[x], regs[y]);
+                        const res = @subWithOverflow(state.regs[x], state.regs[y]);
                         if (res[1] != 0) {
-                            regs[0xf] = 0x00;
+                            state.regs[0xf] = 0x00;
                         } else {
-                            regs[0xf] = 0x01;
+                            state.regs[0xf] = 0x01;
                         }
-                        regs[x] = res[0];
+                        state.regs[x] = res[0];
                     },
                     0x6 => {
                         // Shift register y to the right and store in register x
                         // TODO: Alternative/quirk implementation: Use x instead of y
-                        const lsb: u1 = @truncate(regs[x]);
-                        regs[0xf] = lsb;
-                        regs[x] = regs[x] >> 1;
+                        const lsb: u1 = @truncate(state.regs[x]);
+                        state.regs[0xf] = lsb;
+                        state.regs[x] = state.regs[x] >> 1;
                     },
                     0x7 => {
                         // Subtract register x from register y and store in register x
-                        const res = @subWithOverflow(regs[y], regs[x]);
+                        const res = @subWithOverflow(state.regs[y], state.regs[x]);
                         if (res[1] != 0) {
-                            regs[0xf] = 0x00;
+                            state.regs[0xf] = 0x00;
                         } else {
-                            regs[0xf] = 0x01;
+                            state.regs[0xf] = 0x01;
                         }
-                        regs[x] = res[0];
+                        state.regs[x] = res[0];
                     },
                     0xe => {
                         // Shift register y to the left and store in register x
                         // TODO: Alternative implementation: Use x instead of y
-                        const msb: u1 = @truncate(regs[x] >> 7);
-                        regs[0xf] = msb;
-                        regs[x] = regs[x] << 1;
+                        const msb: u1 = @truncate(state.regs[x] >> 7);
+                        state.regs[0xf] = msb;
+                        state.regs[x] = state.regs[x] << 1;
                     },
                     else => return error.UnsupportedInstruction,
                 }
@@ -287,38 +318,38 @@ pub fn main() anyerror!void {
                     return error.UnsupportedInstruction;
                 }
                 // Skip instructions if register x is not equal to register y
-                if (regs[x] != regs[y]) {
-                    pc += 2;
+                if (state.regs[x] != state.regs[y]) {
+                    state.pc += 2;
                 }
             },
             0xa => {
                 // Store memory address in index
-                index = nnn;
+                state.index = nnn;
             },
             0xb => {
                 // Jump to address plus register 0
-                pc = nnn + regs[0x0];
+                state.pc = nnn + state.regs[0x0];
             },
             0xc => {
                 // Set register x to a random number with mask
-                regs[x] = rnd.random().int(u8) & nn;
+                state.regs[x] = rnd.random().int(u8) & nn;
             },
             0xd => {
                 // Draw sprite
-                regs[0xf] = 0x00;
+                state.regs[0xf] = 0x00;
                 var j: usize = 0;
                 draw_sprite_y: while (j < n) {
-                    const y_coord = (regs[y] & 31) + j;
+                    const y_coord = (state.regs[y] & 31) + j;
                     if (y_coord > 31) break :draw_sprite_y;
-                    const data = memory[index + j];
+                    const data = state.memory[state.index + j];
                     var k: usize = 0;
                     draw_sprite_x: while (k < 8) {
-                        const x_coord = (regs[x] & 63) + k;
+                        const x_coord = (state.regs[x] & 63) + k;
                         if (x_coord > 63) break :draw_sprite_x;
                         const offset = y_coord * 64 + x_coord;
                         if (@as(u1, @truncate(data >> @as(u3, @truncate(7 - k)))) != 0) {
                             if (pixels[offset] != 0) {
-                                regs[0xf] = 0x01;
+                                state.regs[0xf] = 0x01;
                                 pixels[offset] = 0;
                             } else {
                                 pixels[offset] = 0xff;
@@ -334,11 +365,11 @@ pub fn main() anyerror!void {
                 switch (nn) {
                     0x9e => {
                         // Skip if key is pressed
-                        if (keys[regs[x]]) pc += 2;
+                        if (state.keys[state.regs[x]]) state.pc += 2;
                     },
                     0xa1 => {
                         // Skip if key is not pressed
-                        if (!keys[regs[x]]) pc += 2;
+                        if (!state.keys[state.regs[x]]) state.pc += 2;
                     },
                     else => return error.UnsupportedInstruction,
                 }
@@ -347,61 +378,61 @@ pub fn main() anyerror!void {
                 switch (nn) {
                     0x07 => {
                         // Store delay timer in register x
-                        regs[x] = delay_timer;
+                        state.regs[x] = state.delay_timer;
                     },
                     0x0a => {
                         // Wait for keypress
                         var found: bool = false;
                         var i: u8 = 0;
                         while (i <= 0xf) {
-                            if (keys[i]) {
-                                regs[x] = i;
+                            if (state.keys[i]) {
+                                state.regs[x] = i;
                                 found = true;
                                 break;
                             }
                             i += 1;
                         }
-                        if (!found) pc -= 2;
+                        if (!found) state.pc -= 2;
                     },
                     0x15 => {
                         // Set delay timer to register x
-                        delay_timer = regs[x];
+                        state.delay_timer = state.regs[x];
                     },
                     0x18 => {
                         // Set sound timer to register x
-                        sound_timer = regs[x];
+                        state.sound_timer = state.regs[x];
                     },
                     0x1e => {
                         // Add register x to index
-                        index += regs[x];
+                        state.index += state.regs[x];
                     },
                     0x29 => {
                         // Set index to address of sprite for hex digit in register x
-                        index = 0x50 + regs[x] * 5;
+                        state.index = 0x50 + state.regs[x] * 5;
                     },
                     0x33 => {
                         // Store BCD equivalent of register x in index, index + 1 and index + 2
-                        memory[index] = regs[x] / 100;
-                        memory[index + 1] = (regs[x] % 100) / 10;
-                        memory[index + 2] = regs[x] % 10;
+                        state.memory[state.index] = state.regs[x] / 100;
+                        state.memory[state.index + 1] = (state.regs[x] % 100) / 10;
+                        state.memory[state.index + 2] = state.regs[x] % 10;
                     },
                     0x55 => {
                         var i: u8 = 0;
                         while (i <= x) {
-                            memory[index + i] = regs[i];
+                            state.memory[state.index + i] = state.regs[i];
                             i += 1;
                         }
                         // TODO: Alternative implementation: Increment index
-                        //index += i;
+                        //state.index += i;
                     },
                     0x65 => {
                         var i: u8 = 0;
                         while (i <= x) {
-                            regs[i] = memory[index + i];
+                            state.regs[i] = state.memory[state.index + i];
                             i += 1;
                         }
                         // TODO: Alternative implentation: Increment index
-                        //index += i;
+                        //state.index += i;
                     },
                     else => return error.UnsupportedInstruction,
                 }
