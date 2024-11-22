@@ -53,6 +53,7 @@ const EmulatorState = struct {
     sound_timer: u8,
     keys: [Const.NUM_KEYS]bool,
     infinite_loop: bool,
+    ticks: u32,
 
     pub fn init() EmulatorState {
         var state = EmulatorState{
@@ -66,6 +67,7 @@ const EmulatorState = struct {
             .sound_timer = 0,
             .keys = std.mem.zeroes([Const.NUM_KEYS]bool),
             .infinite_loop = false,
+            .ticks = 0,
         };
 
         // Load font data into memory
@@ -108,6 +110,15 @@ fn handle_sdl_events(state: *EmulatorState) bool {
         }
     }
     return true;
+}
+
+fn handle_timers(state: *EmulatorState) void {
+    const current_ticks = sdl.SDL_GetTicks();
+    if (current_ticks - state.ticks > 60) {
+        if (state.delay_timer > 0) state.delay_timer -= 1;
+        if (state.sound_timer > 0) state.sound_timer -= 1;
+        state.ticks = current_ticks;
+    }
 }
 
 fn fetch_instruction(state: *EmulatorState) u16 {
@@ -171,7 +182,7 @@ pub fn main() anyerror!void {
     var draw: bool = true;
     @memset(pixels[0..], 0);
 
-    var ticks = sdl.SDL_GetTicks();
+    state.ticks = sdl.SDL_GetTicks();
 
     std.log.info("Starting main loop", .{});
     mainloop: while (true) {
@@ -181,12 +192,7 @@ pub fn main() anyerror!void {
         if (state.infinite_loop) continue :mainloop;
 
         // Timers
-        const current_ticks = sdl.SDL_GetTicks();
-        if (current_ticks - ticks > 60) {
-            if (state.delay_timer > 0) state.delay_timer -= 1;
-            if (state.sound_timer > 0) state.sound_timer -= 1;
-            ticks = current_ticks;
-        }
+        handle_timers(&state);
 
         // Fetch instruction
         const inst = fetch_instruction(&state);
