@@ -52,18 +52,20 @@ const EmulatorState = struct {
     delay_timer: u8,
     sound_timer: u8,
     keys: [Const.NUM_KEYS]bool,
+    infinite_loop: bool,
 
     pub fn init() EmulatorState {
         var state = EmulatorState{
             .memory = std.mem.zeroes([Const.MEMORY_SIZE]u8),
             .pc = Const.PROGRAM_START,
-            .regs = [_]u8{0} ** Const.NUM_REGISTERS,
-            .stack = [_]u16{0} ** Const.STACK_SIZE,
+            .regs = std.mem.zeroes([Const.NUM_REGISTERS]u8),
+            .stack = std.mem.zeroes([Const.STACK_SIZE]u16),
             .sp = 0,
             .index = 0,
             .delay_timer = 0,
             .sound_timer = 0,
-            .keys = [_]bool{false} ** Const.NUM_KEYS,
+            .keys = std.mem.zeroes([Const.NUM_KEYS]bool),
+            .infinite_loop = false,
         };
 
         // Load font data into memory
@@ -162,8 +164,6 @@ pub fn main() anyerror!void {
     var draw: bool = true;
     @memset(pixels[0..], 0);
 
-    var infinite_loop: bool = false;
-
     var ticks = sdl.SDL_GetTicks();
 
     std.log.info("Starting main loop", .{});
@@ -171,7 +171,7 @@ pub fn main() anyerror!void {
         // Handle SDL events
         if (!handle_sdl_events(&state)) break :mainloop;
 
-        if (infinite_loop) continue :mainloop;
+        if (state.infinite_loop) continue :mainloop;
 
         // Timers
         const current_ticks = sdl.SDL_GetTicks();
@@ -214,7 +214,7 @@ pub fn main() anyerror!void {
                 // Jump to address
                 if (state.pc - 2 == nnn) {
                     std.log.debug("Infinite loop detected", .{});
-                    infinite_loop = true;
+                    state.infinite_loop = true;
                 }
                 state.pc = nnn;
             },
