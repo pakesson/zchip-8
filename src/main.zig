@@ -128,6 +128,263 @@ fn fetch_instruction(state: *EmulatorState) u16 {
     return inst;
 }
 
+fn decode_and_execute(state: *EmulatorState, inst: u16, rnd: *std.rand.Xoshiro256, pixels: []u8, draw: *bool) !void {
+    const x: u4 = @truncate(inst >> 8);
+    const y: u4 = @truncate(inst >> 4);
+    const nnn: u12 = @truncate(inst);
+    const nn: u8 = @truncate(inst);
+    const n: u4 = @truncate(inst);
+    switch (inst >> 12) {
+        0x0 => {
+            switch (nnn) {
+                0x0e0 => {
+                    // Clear display
+                    @memset(pixels[0..], 0);
+                },
+                0x0ee => {
+                    // Return from subroutine
+                    state.pc = state.stack[state.sp];
+                    state.sp -= 1;
+                },
+                else => return error.UnsupportedInstruction,
+            }
+        },
+        0x1 => {
+            // Jump to address
+            if (state.pc - 2 == nnn) {
+                std.log.debug("Infinite loop detected", .{});
+                state.infinite_loop = true;
+            }
+            state.pc = nnn;
+        },
+        0x2 => {
+            // Call subroutine
+            state.sp += 1;
+            state.stack[state.sp] = state.pc;
+            state.pc = nnn;
+        },
+        0x3 => {
+            // Skip instruction if register is equal to value
+            if (state.regs[x] == nn) {
+                state.pc += 2;
+            }
+        },
+        0x4 => {
+            // Skip instruction if register is not equal to value
+            if (state.regs[x] != nn) {
+                state.pc += 2;
+            }
+        },
+        0x5 => {
+            if (n != 0) {
+                return error.UnsupportedInstruction;
+            }
+            // Skip instructions if register x is equal to register y
+            if (state.regs[x] == state.regs[y]) {
+                state.pc += 2;
+            }
+        },
+        0x6 => {
+            // Store in register
+            state.regs[x] = nn;
+        },
+        0x7 => {
+            // Add to register
+            state.regs[x] +%= nn; // Wrapping addition
+        },
+        0x8 => {
+            switch (n) {
+                0x0 => {
+                    // Store register y in register x
+                    state.regs[x] = state.regs[y];
+                },
+                0x1 => {
+                    // OR
+                    state.regs[x] = state.regs[x] | state.regs[y];
+                },
+                0x2 => {
+                    // AND
+                    state.regs[x] = state.regs[x] & state.regs[y];
+                },
+                0x3 => {
+                    // XOR
+                    state.regs[x] = state.regs[x] ^ state.regs[y];
+                },
+                0x4 => {
+                    // Add register y to register x
+                    const res = @addWithOverflow(state.regs[x], state.regs[y]);
+                    if (res[1] != 0) {
+                        state.regs[0xf] = 0x01;
+                    } else {
+                        state.regs[0xf] = 0x00;
+                    }
+                    state.regs[x] = res[0];
+                },
+                0x5 => {
+                    // Subtract register y from register x
+                    const res = @subWithOverflow(state.regs[x], state.regs[y]);
+                    if (res[1] != 0) {
+                        state.regs[0xf] = 0x00;
+                    } else {
+                        state.regs[0xf] = 0x01;
+                    }
+                    state.regs[x] = res[0];
+                },
+                0x6 => {
+                    // Shift register y to the right and store in register x
+                    // TODO: Alternative/quirk implementation: Use x instead of y
+                    const lsb: u1 = @truncate(state.regs[x]);
+                    state.regs[0xf] = lsb;
+                    state.regs[x] = state.regs[x] >> 1;
+                },
+                0x7 => {
+                    // Subtract register x from register y and store in register x
+                    const res = @subWithOverflow(state.regs[y], state.regs[x]);
+                    if (res[1] != 0) {
+                        state.regs[0xf] = 0x00;
+                    } else {
+                        state.regs[0xf] = 0x01;
+                    }
+                    state.regs[x] = res[0];
+                },
+                0xe => {
+                    // Shift register y to the left and store in register x
+                    // TODO: Alternative implementation: Use x instead of y
+                    const msb: u1 = @truncate(state.regs[x] >> 7);
+                    state.regs[0xf] = msb;
+                    state.regs[x] = state.regs[x] << 1;
+                },
+                else => return error.UnsupportedInstruction,
+            }
+        },
+        0x9 => {
+            if (n != 0) {
+                return error.UnsupportedInstruction;
+            }
+            // Skip instructions if register x is not equal to register y
+            if (state.regs[x] != state.regs[y]) {
+                state.pc += 2;
+            }
+        },
+        0xa => {
+            // Store memory address in index
+            state.index = nnn;
+        },
+        0xb => {
+            // Jump to address plus register 0
+            state.pc = nnn + state.regs[0x0];
+        },
+        0xc => {
+            // Set register x to a random number with mask
+            state.regs[x] = rnd.random().int(u8) & nn;
+        },
+        0xd => {
+            // Draw sprite
+            state.regs[0xf] = 0x00;
+            var j: usize = 0;
+            draw_sprite_y: while (j < n) {
+                const y_coord = (state.regs[y] & 31) + j;
+                if (y_coord > 31) break :draw_sprite_y;
+                const data = state.memory[state.index + j];
+                var k: usize = 0;
+                draw_sprite_x: while (k < 8) {
+                    const x_coord = (state.regs[x] & 63) + k;
+                    if (x_coord > 63) break :draw_sprite_x;
+                    const offset = y_coord * 64 + x_coord;
+                    if (@as(u1, @truncate(data >> @as(u3, @truncate(7 - k)))) != 0) {
+                        if (pixels[offset] != 0) {
+                            state.regs[0xf] = 0x01;
+                            pixels[offset] = 0;
+                        } else {
+                            pixels[offset] = 0xff;
+                        }
+                        draw.* = true;
+                    }
+                    k += 1;
+                }
+                j += 1;
+            }
+        },
+        0xe => {
+            switch (nn) {
+                0x9e => {
+                    // Skip if key is pressed
+                    if (state.keys[state.regs[x]]) state.pc += 2;
+                },
+                0xa1 => {
+                    // Skip if key is not pressed
+                    if (!state.keys[state.regs[x]]) state.pc += 2;
+                },
+                else => return error.UnsupportedInstruction,
+            }
+        },
+        0xf => {
+            switch (nn) {
+                0x07 => {
+                    // Store delay timer in register x
+                    state.regs[x] = state.delay_timer;
+                },
+                0x0a => {
+                    // Wait for keypress
+                    var found: bool = false;
+                    var i: u8 = 0;
+                    while (i <= 0xf) {
+                        if (state.keys[i]) {
+                            state.regs[x] = i;
+                            found = true;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    if (!found) state.pc -= 2;
+                },
+                0x15 => {
+                    // Set delay timer to register x
+                    state.delay_timer = state.regs[x];
+                },
+                0x18 => {
+                    // Set sound timer to register x
+                    state.sound_timer = state.regs[x];
+                },
+                0x1e => {
+                    // Add register x to index
+                    state.index += state.regs[x];
+                },
+                0x29 => {
+                    // Set index to address of sprite for hex digit in register x
+                    state.index = 0x50 + state.regs[x] * 5;
+                },
+                0x33 => {
+                    // Store BCD equivalent of register x in index, index + 1 and index + 2
+                    state.memory[state.index] = state.regs[x] / 100;
+                    state.memory[state.index + 1] = (state.regs[x] % 100) / 10;
+                    state.memory[state.index + 2] = state.regs[x] % 10;
+                },
+                0x55 => {
+                    var i: u8 = 0;
+                    while (i <= x) {
+                        state.memory[state.index + i] = state.regs[i];
+                        i += 1;
+                    }
+                    // TODO: Alternative implementation: Increment index
+                    //state.index += i;
+                },
+                0x65 => {
+                    var i: u8 = 0;
+                    while (i <= x) {
+                        state.regs[i] = state.memory[state.index + i];
+                        i += 1;
+                    }
+                    // TODO: Alternative implementation: Increment index
+                    //state.index += i;
+                },
+                else => return error.UnsupportedInstruction,
+            }
+        },
+        else => return error.UnsupportedInstruction,
+    }
+}
+
 pub fn main() anyerror!void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpalloc.deinit() == .ok);
@@ -201,260 +458,7 @@ pub fn main() anyerror!void {
         }
 
         // Decode and execute
-        const x: u4 = @truncate(inst >> 8);
-        const y: u4 = @truncate(inst >> 4);
-        const nnn: u12 = @truncate(inst);
-        const nn: u8 = @truncate(inst);
-        const n: u4 = @truncate(inst);
-        switch (inst >> 12) {
-            0x0 => {
-                switch (nnn) {
-                    0x0e0 => {
-                        // Clear display
-                        @memset(pixels[0..], 0);
-                    },
-                    0x0ee => {
-                        // Return from subroutine
-                        state.pc = state.stack[state.sp];
-                        state.sp -= 1;
-                    },
-                    else => return error.UnsupportedInstruction,
-                }
-            },
-            0x1 => {
-                // Jump to address
-                if (state.pc - 2 == nnn) {
-                    std.log.debug("Infinite loop detected", .{});
-                    state.infinite_loop = true;
-                }
-                state.pc = nnn;
-            },
-            0x2 => {
-                // Call subroutine
-                state.sp += 1;
-                state.stack[state.sp] = state.pc;
-                state.pc = nnn;
-            },
-            0x3 => {
-                // Skip instruction if register is equal to value
-                if (state.regs[x] == nn) {
-                    state.pc += 2;
-                }
-            },
-            0x4 => {
-                // Skip instruction if register is not equal to value
-                if (state.regs[x] != nn) {
-                    state.pc += 2;
-                }
-            },
-            0x5 => {
-                if (n != 0) {
-                    return error.UnsupportedInstruction;
-                }
-                // Skip instructions if register x is equal to register y
-                if (state.regs[x] == state.regs[y]) {
-                    state.pc += 2;
-                }
-            },
-            0x6 => {
-                // Store in register
-                state.regs[x] = nn;
-            },
-            0x7 => {
-                // Add to register
-                state.regs[x] +%= nn; // Wrapping addition
-            },
-            0x8 => {
-                switch (n) {
-                    0x0 => {
-                        // Store register y in register x
-                        state.regs[x] = state.regs[y];
-                    },
-                    0x1 => {
-                        // OR
-                        state.regs[x] = state.regs[x] | state.regs[y];
-                    },
-                    0x2 => {
-                        // AND
-                        state.regs[x] = state.regs[x] & state.regs[y];
-                    },
-                    0x3 => {
-                        // XOR
-                        state.regs[x] = state.regs[x] ^ state.regs[y];
-                    },
-                    0x4 => {
-                        // Add register y to register x
-                        const res = @addWithOverflow(state.regs[x], state.regs[y]);
-                        if (res[1] != 0) {
-                            state.regs[0xf] = 0x01;
-                        } else {
-                            state.regs[0xf] = 0x00;
-                        }
-                        state.regs[x] = res[0];
-                    },
-                    0x5 => {
-                        // Subtract register y from register x
-                        const res = @subWithOverflow(state.regs[x], state.regs[y]);
-                        if (res[1] != 0) {
-                            state.regs[0xf] = 0x00;
-                        } else {
-                            state.regs[0xf] = 0x01;
-                        }
-                        state.regs[x] = res[0];
-                    },
-                    0x6 => {
-                        // Shift register y to the right and store in register x
-                        // TODO: Alternative/quirk implementation: Use x instead of y
-                        const lsb: u1 = @truncate(state.regs[x]);
-                        state.regs[0xf] = lsb;
-                        state.regs[x] = state.regs[x] >> 1;
-                    },
-                    0x7 => {
-                        // Subtract register x from register y and store in register x
-                        const res = @subWithOverflow(state.regs[y], state.regs[x]);
-                        if (res[1] != 0) {
-                            state.regs[0xf] = 0x00;
-                        } else {
-                            state.regs[0xf] = 0x01;
-                        }
-                        state.regs[x] = res[0];
-                    },
-                    0xe => {
-                        // Shift register y to the left and store in register x
-                        // TODO: Alternative implementation: Use x instead of y
-                        const msb: u1 = @truncate(state.regs[x] >> 7);
-                        state.regs[0xf] = msb;
-                        state.regs[x] = state.regs[x] << 1;
-                    },
-                    else => return error.UnsupportedInstruction,
-                }
-            },
-            0x9 => {
-                if (n != 0) {
-                    return error.UnsupportedInstruction;
-                }
-                // Skip instructions if register x is not equal to register y
-                if (state.regs[x] != state.regs[y]) {
-                    state.pc += 2;
-                }
-            },
-            0xa => {
-                // Store memory address in index
-                state.index = nnn;
-            },
-            0xb => {
-                // Jump to address plus register 0
-                state.pc = nnn + state.regs[0x0];
-            },
-            0xc => {
-                // Set register x to a random number with mask
-                state.regs[x] = rnd.random().int(u8) & nn;
-            },
-            0xd => {
-                // Draw sprite
-                state.regs[0xf] = 0x00;
-                var j: usize = 0;
-                draw_sprite_y: while (j < n) {
-                    const y_coord = (state.regs[y] & 31) + j;
-                    if (y_coord > 31) break :draw_sprite_y;
-                    const data = state.memory[state.index + j];
-                    var k: usize = 0;
-                    draw_sprite_x: while (k < 8) {
-                        const x_coord = (state.regs[x] & 63) + k;
-                        if (x_coord > 63) break :draw_sprite_x;
-                        const offset = y_coord * 64 + x_coord;
-                        if (@as(u1, @truncate(data >> @as(u3, @truncate(7 - k)))) != 0) {
-                            if (pixels[offset] != 0) {
-                                state.regs[0xf] = 0x01;
-                                pixels[offset] = 0;
-                            } else {
-                                pixels[offset] = 0xff;
-                            }
-                            draw = true;
-                        }
-                        k += 1;
-                    }
-                    j += 1;
-                }
-            },
-            0xe => {
-                switch (nn) {
-                    0x9e => {
-                        // Skip if key is pressed
-                        if (state.keys[state.regs[x]]) state.pc += 2;
-                    },
-                    0xa1 => {
-                        // Skip if key is not pressed
-                        if (!state.keys[state.regs[x]]) state.pc += 2;
-                    },
-                    else => return error.UnsupportedInstruction,
-                }
-            },
-            0xf => {
-                switch (nn) {
-                    0x07 => {
-                        // Store delay timer in register x
-                        state.regs[x] = state.delay_timer;
-                    },
-                    0x0a => {
-                        // Wait for keypress
-                        var found: bool = false;
-                        var i: u8 = 0;
-                        while (i <= 0xf) {
-                            if (state.keys[i]) {
-                                state.regs[x] = i;
-                                found = true;
-                                break;
-                            }
-                            i += 1;
-                        }
-                        if (!found) state.pc -= 2;
-                    },
-                    0x15 => {
-                        // Set delay timer to register x
-                        state.delay_timer = state.regs[x];
-                    },
-                    0x18 => {
-                        // Set sound timer to register x
-                        state.sound_timer = state.regs[x];
-                    },
-                    0x1e => {
-                        // Add register x to index
-                        state.index += state.regs[x];
-                    },
-                    0x29 => {
-                        // Set index to address of sprite for hex digit in register x
-                        state.index = 0x50 + state.regs[x] * 5;
-                    },
-                    0x33 => {
-                        // Store BCD equivalent of register x in index, index + 1 and index + 2
-                        state.memory[state.index] = state.regs[x] / 100;
-                        state.memory[state.index + 1] = (state.regs[x] % 100) / 10;
-                        state.memory[state.index + 2] = state.regs[x] % 10;
-                    },
-                    0x55 => {
-                        var i: u8 = 0;
-                        while (i <= x) {
-                            state.memory[state.index + i] = state.regs[i];
-                            i += 1;
-                        }
-                        // TODO: Alternative implementation: Increment index
-                        //state.index += i;
-                    },
-                    0x65 => {
-                        var i: u8 = 0;
-                        while (i <= x) {
-                            state.regs[i] = state.memory[state.index + i];
-                            i += 1;
-                        }
-                        // TODO: Alternative implementation: Increment index
-                        //state.index += i;
-                    },
-                    else => return error.UnsupportedInstruction,
-                }
-            },
-            else => return error.UnsupportedInstruction,
-        }
+        try decode_and_execute(&state, inst, &rnd, pixels[0..], &draw);
 
         // Render graphics
         if (draw) {
