@@ -110,6 +110,13 @@ fn handle_sdl_events(state: *EmulatorState) bool {
     return true;
 }
 
+fn fetch_instruction(state: *EmulatorState) u16 {
+    const inst: u16 = @as(u16, @intCast(state.memory[state.pc])) << 8 | @as(u16, @intCast(state.memory[state.pc + 1]));
+    //std.log.debug("pc = {x}, inst = {x}", .{ state.pc, inst });
+    state.pc += 2;
+    return inst;
+}
+
 pub fn main() anyerror!void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpalloc.deinit() == .ok);
@@ -182,9 +189,7 @@ pub fn main() anyerror!void {
         }
 
         // Fetch instruction
-        const inst: u16 = @as(u16, @intCast(state.memory[state.pc])) << 8 | @as(u16, @intCast(state.memory[state.pc + 1]));
-        //std.log.debug("pc = {x}, inst = {x}", .{ state.pc, inst });
-        state.pc += 2;
+        const inst = fetch_instruction(&state);
         if (state.pc >= 0xfff) {
             return error.ProgramCounterOverflow;
         }
