@@ -436,7 +436,7 @@ pub fn main() anyerror!void {
                             state.regs[i] = state.memory[state.index + i];
                             i += 1;
                         }
-                        // TODO: Alternative implentation: Increment index
+                        // TODO: Alternative implementation: Increment index
                         //state.index += i;
                     },
                     else => return error.UnsupportedInstruction,
