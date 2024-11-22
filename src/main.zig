@@ -72,6 +72,42 @@ const EmulatorState = struct {
     }
 };
 
+fn handle_sdl_events(state: *EmulatorState) bool {
+    var sdl_event: sdl.SDL_Event = undefined;
+    while (sdl.SDL_PollEvent(&sdl_event) != 0) {
+        switch (sdl_event.type) {
+            sdl.SDL_QUIT => return false,
+            sdl.SDL_KEYDOWN, sdl.SDL_KEYUP => {
+                const keystate: bool = (sdl_event.type == sdl.SDL_KEYDOWN);
+                switch (sdl_event.key.keysym.scancode) {
+                    sdl.SDL_SCANCODE_ESCAPE => return false,
+
+                    sdl.SDL_SCANCODE_1 => state.keys[0x1] = keystate,
+                    sdl.SDL_SCANCODE_2 => state.keys[0x2] = keystate,
+                    sdl.SDL_SCANCODE_3 => state.keys[0x3] = keystate,
+                    sdl.SDL_SCANCODE_4 => state.keys[0xc] = keystate,
+                    sdl.SDL_SCANCODE_Q => state.keys[0x4] = keystate,
+                    sdl.SDL_SCANCODE_W => state.keys[0x5] = keystate,
+                    sdl.SDL_SCANCODE_E => state.keys[0x6] = keystate,
+                    sdl.SDL_SCANCODE_R => state.keys[0xd] = keystate,
+                    sdl.SDL_SCANCODE_A => state.keys[0x7] = keystate,
+                    sdl.SDL_SCANCODE_S => state.keys[0x8] = keystate,
+                    sdl.SDL_SCANCODE_D => state.keys[0x9] = keystate,
+                    sdl.SDL_SCANCODE_F => state.keys[0xe] = keystate,
+                    sdl.SDL_SCANCODE_Z => state.keys[0xa] = keystate,
+                    sdl.SDL_SCANCODE_X => state.keys[0x0] = keystate,
+                    sdl.SDL_SCANCODE_C => state.keys[0xb] = keystate,
+                    sdl.SDL_SCANCODE_V => state.keys[0xf] = keystate,
+
+                    else => {},
+                }
+            },
+            else => {},
+        }
+    }
+    return true;
+}
+
 pub fn main() anyerror!void {
     var gpalloc = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpalloc.deinit() == .ok);
@@ -133,38 +169,7 @@ pub fn main() anyerror!void {
     std.log.info("Starting main loop", .{});
     mainloop: while (true) {
         // Handle SDL events
-        var sdl_event: sdl.SDL_Event = undefined;
-        while (sdl.SDL_PollEvent(&sdl_event) != 0) {
-            switch (sdl_event.type) {
-                sdl.SDL_QUIT => break :mainloop,
-                sdl.SDL_KEYDOWN, sdl.SDL_KEYUP => {
-                    const keystate: bool = (sdl_event.type == sdl.SDL_KEYDOWN);
-                    switch (sdl_event.key.keysym.scancode) {
-                        sdl.SDL_SCANCODE_ESCAPE => break :mainloop,
-
-                        sdl.SDL_SCANCODE_1 => state.keys[0x1] = keystate,
-                        sdl.SDL_SCANCODE_2 => state.keys[0x2] = keystate,
-                        sdl.SDL_SCANCODE_3 => state.keys[0x3] = keystate,
-                        sdl.SDL_SCANCODE_4 => state.keys[0xc] = keystate,
-                        sdl.SDL_SCANCODE_Q => state.keys[0x4] = keystate,
-                        sdl.SDL_SCANCODE_W => state.keys[0x5] = keystate,
-                        sdl.SDL_SCANCODE_E => state.keys[0x6] = keystate,
-                        sdl.SDL_SCANCODE_R => state.keys[0xd] = keystate,
-                        sdl.SDL_SCANCODE_A => state.keys[0x7] = keystate,
-                        sdl.SDL_SCANCODE_S => state.keys[0x8] = keystate,
-                        sdl.SDL_SCANCODE_D => state.keys[0x9] = keystate,
-                        sdl.SDL_SCANCODE_F => state.keys[0xe] = keystate,
-                        sdl.SDL_SCANCODE_Z => state.keys[0xa] = keystate,
-                        sdl.SDL_SCANCODE_X => state.keys[0x0] = keystate,
-                        sdl.SDL_SCANCODE_C => state.keys[0xb] = keystate,
-                        sdl.SDL_SCANCODE_V => state.keys[0xf] = keystate,
-
-                        else => {},
-                    }
-                },
-                else => {},
-            }
-        }
+        if (!handle_sdl_events(&state)) break :mainloop;
 
         if (infinite_loop) continue :mainloop;
 
